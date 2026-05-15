@@ -520,6 +520,119 @@ def trail_inject():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/trail_debug", methods=["GET"])
+def trail_debug():
+    """
+    מריץ מחזור אחד של הטריילינג ידנית ומחזיר תוצאות מפורטות.
+    שימושי לבדיקה שהטריילינג עובד כמו שצריך.
+    """
+    debug_results = []
+    with trailing_lock:
+        symbols = list(trailing_state.keys())
+
+    if not symbols:
+        return jsonify({"status": "no_positions", "message": "No positions in trailing state"})
+
+    for symbol in symbols:
+        result = {"symbol": symbol, "steps": []}
+        try:
+            with trailing_lock:
+                state = trailing_state.get(symbol)
+            if not state:
+                result["steps"].append("No state found")
+                continue
+
+            result["state_before"] = dict(state)
+
+            # בדוק פוזיציה
+            pos = get_position(symbol)
+            result["position"] = pos
+            result["steps"].append(f"Position check: has_position={pos.get('has_position')}")
+
+            if not pos.get("has_position"):
+                result["steps"].append("Position closed — would remove from trailing")
+                debug_results.append(result)
+                continue
+
+            # בדוק מחיר
+            mark_price = get_mark_price(symbol)
+            result["mark_price"] = mark_price
+            result["steps"].append(f"Mark price: {mark_price}")
+
+            if mark_price == 0:
+                result["steps"].append("Mark price is 0 — skipping")
+                debug_results.append(result)
+                continue
+
+            with trailing_lock:
+                state = trailing_state.get(symbol)
+                side       = state["side"]
+                entry      = state["entry"]
+                best_price = state["best_price"]
+                current_sl = state["sl"]
+
+                if side == "Buy":
+                    if mark_price > best_price:
+                        state["best_price"] = mark_price
+                        best_price = mark_price
+                        result["steps"].append(f"Updated best_price to {best_price}")
+
+                    profit_pts = best_price - entry
+                    result["profit_pts"] = profit_pts
+                    result["steps"].append(f"Profit: {profit_pts:.2f} pts (trigger={TRAIL_TRIGGER})")
+
+                    if profit_pts >= TRAIL_TRIGGER:
+                        if not state.get("active"):
+                            state["active"] = True
+                            result["steps"].append("Trailing ACTIVATED!")
+                        new_sl = round(best_price - TRAIL_OFFSET, 2)
+                        result["new_sl_calculated"] = new_sl
+                        if new_sl > current_sl:
+                            state["sl"] = new_sl
+                            update_result = update_stop_loss(symbol, new_sl)
+                            result["sl_update_result"] = update_result
+                            result["steps"].append(f"SL updated: {current_sl} -> {new_sl}")
+                        else:
+                            result["steps"].append(f"SL not updated: new_sl={new_sl} <= current_sl={current_sl}")
+                    else:
+                        result["steps"].append(f"Waiting for trigger: {profit_pts:.2f}/{TRAIL_TRIGGER} pts")
+
+                elif side == "Sell":
+                    if mark_price < best_price:
+                        state["best_price"] = mark_price
+                        best_price = mark_price
+                        result["steps"].append(f"Updated best_price to {best_price}")
+
+                    profit_pts = entry - best_price
+                    result["profit_pts"] = profit_pts
+                    result["steps"].append(f"Profit: {profit_pts:.2f} pts (trigger={TRAIL_TRIGGER})")
+
+                    if profit_pts >= TRAIL_TRIGGER:
+                        if not state.get("active"):
+                            state["active"] = True
+                            result["steps"].append("Trailing ACTIVATED!")
+                        new_sl = round(best_price + TRAIL_OFFSET, 2)
+                        result["new_sl_calculated"] = new_sl
+                        if new_sl < current_sl:
+                            state["sl"] = new_sl
+                            update_result = update_stop_loss(symbol, new_sl)
+                            result["sl_update_result"] = update_result
+                            result["steps"].append(f"SL updated: {current_sl} -> {new_sl}")
+                        else:
+                            result["steps"].append(f"SL not updated: new_sl={new_sl} >= current_sl={current_sl}")
+                    else:
+                        result["steps"].append(f"Waiting for trigger: {profit_pts:.2f}/{TRAIL_TRIGGER} pts")
+
+                result["state_after"] = dict(state)
+
+        except Exception as e:
+            result["error"] = str(e)
+            result["traceback"] = traceback.format_exc()
+
+        debug_results.append(result)
+
+    return jsonify({"status": "ok", "debug": debug_results})
+
 @app.route("/", methods=["GET"])
 def health():
     with trailing_lock:
