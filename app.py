@@ -301,7 +301,7 @@ def webhook():
 
         action    = data.get("action", "").lower()
         sentiment = data.get("sentiment", "").lower()
-        symbol    = data.get("ticker", "BTCPERP").replace("-", "")
+        symbol    = data.get("ticker", "BTCUSDC").replace("-", "")
         qty       = float(data.get("quantity", 1))
         sl        = data.get("stopLoss")
         tp        = data.get("takeProfit")
@@ -414,7 +414,7 @@ def trail_sync():
     synced = []
     skipped = []
     try:
-        result = bybit_get("/v5/position/list", {"category": "linear"})
+        result = bybit_get("/v5/position/list", {"category": "linear", "settleCoin": "USDC"})
         positions = result.get("result", {}).get("list", [])
         for pos in positions:
             size = float(pos.get("size", 0))
@@ -464,6 +464,49 @@ def trail_sync():
         err = traceback.format_exc()
         print(f"[SYNC ERROR] {err}")
         return jsonify({"error": str(e), "traceback": err}), 500
+
+@app.route("/trail_inject", methods=["GET"])
+def trail_inject():
+    """
+    הזרקה ידנית של פוזיציה לטריילינג.
+    פרמטרים: symbol, side (Buy/Sell), entry, sl
+    דוגמה: /trail_inject?symbol=BTCUSDC&side=Buy&entry=79094.30&sl=78841.50
+    """
+    try:
+        symbol = request.args.get("symbol", "BTCUSDC")
+        side   = request.args.get("side", "Buy")
+        entry  = float(request.args.get("entry", 0))
+        sl     = float(request.args.get("sl", 0))
+
+        if entry == 0:
+            return jsonify({"error": "Missing entry price"}), 400
+
+        mark_price = get_mark_price(symbol)
+        best = mark_price if mark_price > 0 else entry
+        init_sl = sl if sl > 0 else ((best - TRAIL_OFFSET) if side == "Buy" else (best + TRAIL_OFFSET))
+
+        with trailing_lock:
+            trailing_state[symbol] = {
+                "side":       side,
+                "entry":      entry,
+                "best_price": best,
+                "sl":         init_sl,
+                "active":     False,
+                "injected":   True
+            }
+
+        print(f"[INJECT] {symbol} {side} @ {entry:.2f}, mark={best:.2f}, SL={init_sl:.2f}")
+        return jsonify({
+            "status":     "ok",
+            "symbol":     symbol,
+            "side":       side,
+            "entry":      entry,
+            "mark_price": best,
+            "init_sl":    init_sl,
+            "message":    "Position injected into trailing stop. Trailing will activate after " + str(TRAIL_TRIGGER) + " points profit."
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/", methods=["GET"])
 def health():
