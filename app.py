@@ -313,7 +313,7 @@ def webhook():
 
         action    = data.get("action", "").lower()
         sentiment = data.get("sentiment", "").lower()
-        symbol    = data.get("ticker", "BTCUSDC").replace("-", "")
+        symbol    = data.get("ticker", "BTCPERP").replace("-", "")
         qty       = float(data.get("quantity", 1))
         sl        = data.get("stopLoss")
         tp        = data.get("takeProfit")
@@ -485,7 +485,7 @@ def trail_inject():
     דוגמה: /trail_inject?symbol=BTCUSDC&side=Buy&entry=79094.30&sl=78841.50
     """
     try:
-        symbol = request.args.get("symbol", "BTCUSDC")
+        symbol = request.args.get("symbol", "BTCPERP")
         side   = request.args.get("side", "Buy")
         entry  = float(request.args.get("entry", 0))
         sl     = float(request.args.get("sl", 0))
@@ -534,7 +534,7 @@ def positions_debug():
         })
         result_usdc = bybit_get("/v5/position/list", {
             "category": "linear",
-            "symbol": "BTCUSDC"
+            "symbol": "BTCPERP"
         })
         result_perp = bybit_get("/v5/position/list", {
             "category": "linear",
