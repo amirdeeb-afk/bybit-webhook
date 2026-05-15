@@ -520,6 +520,39 @@ def trail_inject():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route("/positions_debug", methods=["GET"])
+def positions_debug():
+    """
+    מחזיר את כל הפוזיציות הפתוחות מ-Bybit API (raw).
+    שימושי לגלות את שם הסימבול הנכון.
+    """
+    try:
+        # נסה ללא סימבול ספציפי
+        result_all = bybit_get("/v5/position/list", {
+            "category": "linear",
+            "settleCoin": "USDC"
+        })
+        result_usdc = bybit_get("/v5/position/list", {
+            "category": "linear",
+            "symbol": "BTCUSDC"
+        })
+        result_perp = bybit_get("/v5/position/list", {
+            "category": "linear",
+            "symbol": "BTCPERP"
+        })
+        # סנן רק פוזיציות עם size > 0
+        all_positions = result_all.get("result", {}).get("list", [])
+        open_positions = [p for p in all_positions if float(p.get("size", 0)) > 0]
+        return jsonify({
+            "status": "ok",
+            "open_positions_usdc_settle": open_positions,
+            "btcusdc_direct": result_usdc,
+            "btcperp_direct": result_perp,
+            "all_count": len(all_positions)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
 @app.route("/trail_debug", methods=["GET"])
 def trail_debug():
     """
