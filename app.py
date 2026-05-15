@@ -405,6 +405,66 @@ def trail_status():
             "trail_offset": TRAIL_OFFSET
         })
 
+@app.route("/trail_sync", methods=["GET"])
+def trail_sync():
+    """
+    סורק את כל הפוזיציות הפתוחות ב-Bybit ומזריק אותן לטריילינג אוטומטית.
+    שימושי כשפוזיציה נפתחה לפני שהשרת הופעל.
+    """
+    synced = []
+    skipped = []
+    try:
+        result = bybit_get("/v5/position/list", {"category": "linear"})
+        positions = result.get("result", {}).get("list", [])
+        for pos in positions:
+            size = float(pos.get("size", 0))
+            if size == 0:
+                continue
+            symbol     = pos.get("symbol")
+            side       = pos.get("side")          # "Buy" or "Sell"
+            entry      = float(pos.get("avgPrice", 0))
+            mark_price = float(pos.get("markPrice", 0))
+            current_sl = float(pos.get("stopLoss", 0)) if pos.get("stopLoss") else 0
+
+            with trailing_lock:
+                if symbol in trailing_state:
+                    skipped.append({"symbol": symbol, "reason": "already tracked"})
+                    continue
+                # best_price = המחיר הנוכחי (הטוב ביותר שידוע לנו)
+                best = mark_price if mark_price > 0 else entry
+                # SL ראשוני = SL הנוכחי ב-Bybit (אם קיים), אחרת חישוב לפי offset
+                if current_sl > 0:
+                    init_sl = current_sl
+                else:
+                    init_sl = (best - TRAIL_OFFSET) if side == "Buy" else (best + TRAIL_OFFSET)
+
+                trailing_state[symbol] = {
+                    "side":       side,
+                    "entry":      entry,
+                    "best_price": best,
+                    "sl":         init_sl,
+                    "active":     False,
+                    "synced":     True
+                }
+                synced.append({
+                    "symbol":     symbol,
+                    "side":       side,
+                    "entry":      entry,
+                    "mark_price": mark_price,
+                    "init_sl":    init_sl
+                })
+                print(f"[SYNC] Injected {symbol} {side} @ {entry:.2f}, mark={mark_price:.2f}, SL={init_sl:.2f}")
+
+        return jsonify({
+            "status":  "ok",
+            "synced":  synced,
+            "skipped": skipped
+        })
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"[SYNC ERROR] {err}")
+        return jsonify({"error": str(e), "traceback": err}), 500
+
 @app.route("/", methods=["GET"])
 def health():
     with trailing_lock:
