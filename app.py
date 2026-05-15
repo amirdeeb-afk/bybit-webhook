@@ -208,7 +208,7 @@ def trailing_stop_worker():
             try:
                 with trailing_lock:
                     state = trailing_state.get(symbol)
-                    if not state or not state.get("active"):
+                    if not state:
                         continue
 
                 # בדוק שהפוזיציה עדיין קיימת
@@ -238,10 +238,14 @@ def trailing_stop_worker():
                         if mark_price > best_price:
                             state["best_price"] = mark_price
                             best_price = mark_price
+                            print(f"[TRAIL] {symbol} LONG: new best_price={best_price:.2f}")
 
-                        # בדוק אם הטריילינג צריך להתחיל
+                        # בדוק אם הטריילינג צריך להתחיל/להתקדם
                         profit_pts = best_price - entry
                         if profit_pts >= TRAIL_TRIGGER:
+                            if not state.get("active"):
+                                state["active"] = True
+                                print(f"[TRAIL] {symbol} LONG: Trailing ACTIVATED! profit={profit_pts:.2f} pts")
                             new_sl = round(best_price - TRAIL_OFFSET, 2)
                             # SL רק עולה — אף פעם לא יורד
                             if new_sl > current_sl:
@@ -249,16 +253,22 @@ def trailing_stop_worker():
                                 print(f"[TRAIL] {symbol} LONG: price={mark_price:.2f}, best={best_price:.2f}, new SL={new_sl:.2f} (was {current_sl:.2f})")
                                 result = update_stop_loss(symbol, new_sl)
                                 print(f"[TRAIL] Update SL result: {result}")
+                        else:
+                            print(f"[TRAIL] {symbol} LONG: waiting for trigger, profit={profit_pts:.2f}/{TRAIL_TRIGGER} pts")
 
                     elif side == "Sell":
                         # Short: עדכן best_price אם המחיר ירד
                         if mark_price < best_price:
                             state["best_price"] = mark_price
                             best_price = mark_price
+                            print(f"[TRAIL] {symbol} SHORT: new best_price={best_price:.2f}")
 
-                        # בדוק אם הטריילינג צריך להתחיל
+                        # בדוק אם הטריילינג צריך להתחיל/להתקדם
                         profit_pts = entry - best_price
                         if profit_pts >= TRAIL_TRIGGER:
+                            if not state.get("active"):
+                                state["active"] = True
+                                print(f"[TRAIL] {symbol} SHORT: Trailing ACTIVATED! profit={profit_pts:.2f} pts")
                             new_sl = round(best_price + TRAIL_OFFSET, 2)
                             # SL רק יורד — אף פעם לא עולה
                             if new_sl < current_sl:
@@ -266,6 +276,8 @@ def trailing_stop_worker():
                                 print(f"[TRAIL] {symbol} SHORT: price={mark_price:.2f}, best={best_price:.2f}, new SL={new_sl:.2f} (was {current_sl:.2f})")
                                 result = update_stop_loss(symbol, new_sl)
                                 print(f"[TRAIL] Update SL result: {result}")
+                        else:
+                            print(f"[TRAIL] {symbol} SHORT: waiting for trigger, profit={profit_pts:.2f}/{TRAIL_TRIGGER} pts")
 
             except Exception as e:
                 print(f"[TRAIL] Error processing {symbol}: {e}")
