@@ -1,0 +1,249 @@
+//@version=5
+// ══════════════════════════════════════════════════════════════
+// Wyckoff + SMT + FVG — Bybit BTCUSDC [A] Entry+SL V14
+// ══════════════════════════════════════════════════════════════
+//
+// מה הקוד הזה עושה:
+//   ✅ מזהה כניסות Long/Short לפי Wyckoff + SMT + FVG
+//   ✅ כניסות רחבות כמו V10 (boundary_pct=0.50, smt_memory=20)
+//   ✅ ללא TP קבוע — סומך לחלוטין על Trailing Stop של Bybit (T400/O150)
+//   ✅ SL ראשוני מורחב ל-200 נקודות
+//   ✅ שולח Webhook לשרת עם SL בלבד (ללא TP)
+//
+// שינויים מ-V10:
+//   1. commission_value תוקן ל-0.028% (העמלה האמיתית לצד אחד)
+//      הסבר: Bybit גובה 0.055% Round-Trip, כלומר 0.0275% לכל צד.
+//      TradingView מחיל commission על כל צד בנפרד — לכן 0.028% נכון.
+//   2. SL הוגדל ל-200 נקודות (במקום 100)
+//   3. Trailing עודכן ל-T400/O150 (במקום T150/O50)
+//   4. פרמטרי כניסה כמו V10: boundary_pct=0.50, smt_memory=20, use_trend=false
+//
+// Break-even לעסקה:
+//   עמלה אמיתית: ~0.473 USDC (כניסה + יציאה)
+//   Break-even: ~43 נקודות בלבד
+//
+// גרף: BYBIT:BTCUSDC.P | SMT: BINANCE:BTCUSDT.P
+// כמות: 0.011 BTC | מינוף: 20x | הון: ~$100
+// ══════════════════════════════════════════════════════════════
+strategy("Wyckoff+SMT+FVG — Bybit BTCUSDC [A] Entry+SL V14",
+     overlay              = true,
+     initial_capital      = 100,
+     default_qty_type     = strategy.fixed,
+     default_qty_value    = 0.011,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.028,
+     calc_on_every_tick   = false,
+     max_bars_back        = 500)
+
+// ══════════════════════════════════════════════
+// פרמטרים
+// ══════════════════════════════════════════════
+es_ticker    = input.symbol("BINANCE:BTCUSDT.P",  "סימבול השוואה SMT")
+trade_qty    = input.float(0.011, "כמות (BTC)",   minval=0.001, step=0.001)
+
+swing_len    = input.int(9,      "SMT Swing Length",         minval=3,   maxval=30)
+wyk_len      = input.int(60,     "Wyckoff Range (נרות)",     minval=20,  maxval=200)
+fvg_bars     = input.int(20,     "FVG תוקף (נרות)",          minval=5,   maxval=60)
+sl_pts       = input.float(200.0, "SL ראשוני (נקודות)",      minval=5.0, maxval=500.0, step=1.0)
+smt_memory   = input.int(20,     "SMT זיכרון (נרות)",        minval=1,   maxval=50)
+boundary_pct = input.float(0.50, "Wyckoff Boundary Zone %",  minval=0.05, maxval=0.7, step=0.05)
+
+use_trend     = input.bool(false, "פילטר מגמה שבועי (EMA)")
+trend_ema_len = input.int(33,     "EMA שבועי",               minval=5,   maxval=50)
+
+use_session   = input.bool(false, "פילטר שעות Session")
+session_start = input.int(22,     "שעת התחלה UTC (22=01:00 ישראל)", minval=0, maxval=23)
+session_end   = input.int(20,     "שעת סיום UTC (20=23:00 ישראל)",  minval=0, maxval=23)
+
+// ══════════════════════════════════════════════
+// נרות מאושרים (אנטי-Repainting)
+// ══════════════════════════════════════════════
+confirmed = barstate.isconfirmed
+
+// ══════════════════════════════════════════════
+// Session
+// ══════════════════════════════════════════════
+in_session = not use_session or (hour >= session_start or hour < session_end)
+
+// ══════════════════════════════════════════════
+// מגמה שבועית (EMA)
+// ══════════════════════════════════════════════
+weekly_close = request.security(syminfo.tickerid, "W", close, lookahead=barmerge.lookahead_off)
+weekly_ema   = ta.ema(weekly_close, trend_ema_len)
+bull_trend   = not use_trend or weekly_close > weekly_ema
+bear_trend   = not use_trend or weekly_close < weekly_ema
+
+// ══════════════════════════════════════════════
+// נתוני SMT (BINANCE:BTCUSDT.P)
+// ══════════════════════════════════════════════
+es_high = request.security(es_ticker, timeframe.period, high, lookahead=barmerge.lookahead_off)
+es_low  = request.security(es_ticker, timeframe.period, low,  lookahead=barmerge.lookahead_off)
+
+// ══════════════════════════════════════════════
+// WYCKOFF — Range High/Low/Mid
+// ══════════════════════════════════════════════
+wyk_high  = ta.highest(high, wyk_len)
+wyk_low   = ta.lowest(low,   wyk_len)
+wyk_mid   = math.avg(wyk_high, wyk_low)
+wyk_range = wyk_high - wyk_low
+boundary  = wyk_range * boundary_pct
+
+in_long_zone  = low  <= wyk_low  + boundary
+in_short_zone = high >= wyk_high - boundary
+
+// ── ויזואל Wyckoff ──
+ph = plot(wyk_high, "Wyckoff High", color=color.new(color.red,   0), linewidth=2)
+pl = plot(wyk_low,  "Wyckoff Low",  color=color.new(color.green, 0), linewidth=2)
+plot(wyk_mid, "Wyckoff Mid", color=color.new(color.blue, 0), linewidth=1, style=plot.style_circles)
+fill(ph, pl, color=color.new(color.gray, 93))
+bgcolor(in_long_zone  and in_session ? color.new(color.green, 88) : na, title="Long Zone")
+bgcolor(in_short_zone and in_session ? color.new(color.red,   88) : na, title="Short Zone")
+
+// ══════════════════════════════════════════════
+// SMT — Swing Divergence
+// ══════════════════════════════════════════════
+nq_new_low  = low  < ta.lowest(low[1],   swing_len)
+nq_new_high = high > ta.highest(high[1], swing_len)
+es_new_low  = es_low  < ta.lowest(es_low[1],  swing_len)
+es_new_high = es_high > ta.highest(es_high[1], swing_len)
+
+raw_bull_smt = nq_new_low  and not es_new_low  and confirmed
+raw_bear_smt = nq_new_high and not es_new_high and confirmed
+
+var int bull_smt_age = 999
+var int bear_smt_age = 999
+
+if raw_bull_smt
+    bull_smt_age := 0
+else
+    bull_smt_age += 1
+
+if raw_bear_smt
+    bear_smt_age := 0
+else
+    bear_smt_age += 1
+
+bull_smt_active = bull_smt_age <= smt_memory
+bear_smt_active = bear_smt_age <= smt_memory
+
+// ── ויזואל SMT ──
+if raw_bull_smt
+    line.new(bar_index - swing_len, low, bar_index, low,
+         color=color.lime, width=2, style=line.style_dashed)
+    label.new(bar_index, low, "SMT↑",
+         color=color.lime, textcolor=color.black,
+         style=label.style_label_up, size=size.small)
+
+if raw_bear_smt
+    line.new(bar_index - swing_len, high, bar_index, high,
+         color=color.red, width=2, style=line.style_dashed)
+    label.new(bar_index, high, "SMT↓",
+         color=color.red, textcolor=color.white,
+         style=label.style_label_down, size=size.small)
+
+// ══════════════════════════════════════════════
+// FVG — Fair Value Gap
+// ══════════════════════════════════════════════
+bull_fvg_now = low > high[2] and confirmed
+bear_fvg_now = high < low[2] and confirmed
+
+if bull_fvg_now
+    box.new(bar_index - 2, low, bar_index + fvg_bars, high[2],
+         bgcolor=color.new(color.green, 75),
+         border_color=color.new(color.green, 30), border_width=1)
+
+if bear_fvg_now
+    box.new(bar_index - 2, low[2], bar_index + fvg_bars, high,
+         bgcolor=color.new(color.red, 75),
+         border_color=color.new(color.red, 30), border_width=1)
+
+var float bfvg_lo  = na
+var float bfvg_hi  = na
+var int   bfvg_age = 999
+var float rfvg_lo  = na
+var float rfvg_hi  = na
+var int   rfvg_age = 999
+
+if bull_fvg_now
+    bfvg_lo  := high[2]
+    bfvg_hi  := low
+    bfvg_age := 0
+else
+    bfvg_age += 1
+
+if bear_fvg_now
+    rfvg_lo  := high
+    rfvg_hi  := low[2]
+    rfvg_age := 0
+else
+    rfvg_age += 1
+
+in_bull_fvg = bfvg_age < fvg_bars and not na(bfvg_lo) and close >= bfvg_lo and close <= bfvg_hi
+in_bear_fvg = rfvg_age < fvg_bars and not na(rfvg_lo) and close >= rfvg_lo and close <= rfvg_hi
+
+// ══════════════════════════════════════════════
+// חישוב SL ראשוני
+// ══════════════════════════════════════════════
+long_sl  = close - sl_pts
+short_sl = close + sl_pts
+
+// ══════════════════════════════════════════════
+// תנאי כניסה — רחבים כמו V10
+// ══════════════════════════════════════════════
+no_pos = strategy.position_size == 0
+
+enter_long  = bull_smt_active and (in_long_zone  or in_bull_fvg) and bull_trend and in_session and no_pos and confirmed
+enter_short = bear_smt_active and (in_short_zone or in_bear_fvg) and bear_trend and in_session and no_pos and confirmed
+
+// ══════════════════════════════════════════════
+// הודעות Webhook — כניסה בלבד, עם SL בלבד (ללא TP)
+// ⚠️ אין הודעת exit — Bybit סוגר לבד דרך SL/Trailing
+// ══════════════════════════════════════════════
+long_entry_msg = '{"ticker": "BTCPERP", "action": "buy", "sentiment": "long", "quantity": '
+     + str.tostring(trade_qty)
+     + ', "stopLoss": '   + str.tostring(math.round(long_sl  * 100) / 100, "#.##")
+     + '}'
+
+short_entry_msg = '{"ticker": "BTCPERP", "action": "sell", "sentiment": "short", "quantity": '
+     + str.tostring(trade_qty)
+     + ', "stopLoss": '   + str.tostring(math.round(short_sl * 100) / 100, "#.##")
+     + '}'
+
+// ══════════════════════════════════════════════
+// כניסת LONG
+// strategy.exit = Backtest בלבד, עם סימולציית Trailing T400/O150
+// ══════════════════════════════════════════════
+if enter_long
+    strategy.entry("Long", strategy.long, qty=trade_qty, alert_message=long_entry_msg)
+    strategy.exit("XL", from_entry="Long", stop=long_sl, trail_points=400, trail_offset=150)
+
+// ══════════════════════════════════════════════
+// כניסת SHORT
+// strategy.exit = Backtest בלבד, עם סימולציית Trailing T400/O150
+// ══════════════════════════════════════════════
+if enter_short
+    strategy.entry("Short", strategy.short, qty=trade_qty, alert_message=short_entry_msg)
+    strategy.exit("XS", from_entry="Short", stop=short_sl, trail_points=400, trail_offset=150)
+
+// ══════════════════════════════════════════════
+// ויזואל — סימני כניסה
+// ══════════════════════════════════════════════
+plotshape(enter_long,  "BUY",  shape.labelup,   location.belowbar,
+     color=color.new(color.green, 0), size=size.normal, text="BUY",  textcolor=color.white)
+plotshape(enter_short, "SELL", shape.labeldown, location.abovebar,
+     color=color.new(color.red,   0), size=size.normal, text="SELL", textcolor=color.white)
+
+// קווי SL כשיש פוזיציה פתוחה
+var float active_sl = na
+
+if enter_long
+    active_sl := long_sl
+if enter_short
+    active_sl := short_sl
+if strategy.position_size == 0
+    active_sl := na
+
+plot(active_sl, "SL (-200pts)", color=color.new(color.orange, 0), linewidth=2, style=plot.style_linebr)
+
+// רקע אפור מחוץ לשעות Session
+bgcolor(not in_session ? color.new(color.black, 95) : na, title="Outside Session")
