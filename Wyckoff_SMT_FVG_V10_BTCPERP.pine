@@ -24,6 +24,8 @@ strategy("Wyckoff+SMT+FVG — Bybit BTCUSDC [A] Entry+SL V10",
      initial_capital      = 100,
      default_qty_type     = strategy.fixed,
      default_qty_value    = 0.011,
+     commission_type      = strategy.commission.percent,
+     commission_value     = 0.055,
      calc_on_every_tick   = false,
      max_bars_back        = 500)
 
