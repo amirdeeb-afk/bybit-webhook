@@ -29,6 +29,12 @@ trailing_state = {}
 trailing_lock = threading.Lock()
 
 # ══════════════════════════════════════════════
+# Cooldown — מניעת סגירה מיידית של פוזיציה חדשה
+# ══════════════════════════════════════════════
+COOLDOWN_SECONDS = 30  # לא לסגור פוזיציה שנפתחה לפני פחות מ-30 שניות
+position_open_time = {}  # { "BTCPERP": timestamp }
+
+# ══════════════════════════════════════════════
 # Keep-Alive — מונע שינה של Render Free Tier
 # ══════════════════════════════════════════════
 def keep_alive():
@@ -236,7 +242,16 @@ def webhook():
         # ══════════════════════════════════════════
         # TradingView V10 תמיד סוגר עסקה ישנה לפני שפותח חדשה.
         # לכן: כשמגיע entry חדש — סגור כל פוזיציה פתוחה (בכל כיוון) ופתח חדשה.
+        # אבל: אם הפוזיציה נפתחה לפני פחות מ-COOLDOWN_SECONDS — דלג (מניעת סגירה מיידית).
         if action in ("buy", "sell"):
+            # בדיקת Cooldown
+            open_ts = position_open_time.get(symbol, 0)
+            elapsed = time.time() - open_ts
+            if elapsed < COOLDOWN_SECONDS:
+                msg = f"Cooldown active for {symbol}: {elapsed:.1f}s < {COOLDOWN_SECONDS}s — skipping entry"
+                print(f"[COOLDOWN] {msg}")
+                return jsonify({"status": "skipped", "reason": msg})
+
             pos = get_position(symbol)
             print(f"[POSITION CHECK] {symbol}: {pos}")
             if pos.get("has_position"):
@@ -254,8 +269,9 @@ def webhook():
             result = place_order(symbol, "Buy", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing מובנה של Bybit
+            # הפעל Trailing מובנה של Bybit + רשום זמן פתיחה
             if result.get("retCode") == 0 or result.get("result"):
+                position_open_time[symbol] = time.time()
                 entry_price = get_mark_price(symbol)
                 active_price = entry_price + TRAIL_TRIGGER
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
@@ -265,8 +281,9 @@ def webhook():
             result = place_order(symbol, "Sell", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing מובנה של Bybit
+            # הפעל Trailing מובנה של Bybit + רשום זמן פתיחה
             if result.get("retCode") == 0 or result.get("result"):
+                position_open_time[symbol] = time.time()
                 entry_price = get_mark_price(symbol)
                 active_price = entry_price - TRAIL_TRIGGER
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
