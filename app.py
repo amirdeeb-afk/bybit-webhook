@@ -254,6 +254,8 @@ def webhook():
                     with trailing_lock:
                         trailing_state.pop(symbol, None)
                     time.sleep(0.5)
+            else:
+                print(f"[NEW ENTRY] No existing position, proceeding with fresh entry")
 
         if action == "buy" and sentiment == "long":
             result = place_order(symbol, "Buy", qty,
