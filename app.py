@@ -232,28 +232,21 @@ def webhook():
         price     = data.get("price")
 
         # ══════════════════════════════════════
-        # הגנת כפל פוזיציות — בדיקה לפני כניסה
-        # ══════════════════════════════════════
+        # סגירת פוזיציה קיימת לפני כל כניסה חדשה
+        # ══════════════════════════════════════════
+        # TradingView V10 תמיד סוגר עסקה ישנה לפני שפותח חדשה.
+        # לכן: כשמגיע entry חדש — סגור כל פוזיציה פתוחה (בכל כיוון) ופתח חדשה.
         if action in ("buy", "sell"):
             pos = get_position(symbol)
             print(f"[POSITION CHECK] {symbol}: {pos}")
             if pos.get("has_position"):
                 existing_side = pos.get("side", "").lower()
-                # אם כבר יש פוזיציה באותו כיוון — דלג
-                if (action == "buy" and existing_side == "buy") or \
-                   (action == "sell" and existing_side == "sell"):
-                    msg = f"Position already open ({existing_side} {pos.get('size')} BTC) — skipping duplicate entry"
-                    print(f"[SKIP] {msg}")
-                    return jsonify({"status": "skipped", "reason": msg})
-                # אם יש פוזיציה בכיוון הפוך — סגור אותה קודם
-                else:
-                    print(f"[FLIP] Closing opposite position before new entry")
-                    close_result = close_position(symbol, existing_side, pos.get("size"))
-                    print(f"[FLIP] Close result: {close_result}")
-                    # נקה trailing state של הפוזיציה הישנה
-                    with trailing_lock:
-                        trailing_state.pop(symbol, None)
-                    time.sleep(0.5)
+                print(f"[CLOSE BEFORE ENTRY] Closing existing {existing_side} position before new {action} entry")
+                close_result = close_position(symbol, existing_side, pos.get("size"))
+                print(f"[CLOSE BEFORE ENTRY] Close result: {close_result}")
+                with trailing_lock:
+                    trailing_state.pop(symbol, None)
+                time.sleep(0.5)
             else:
                 print(f"[NEW ENTRY] No existing position, proceeding with fresh entry")
 
