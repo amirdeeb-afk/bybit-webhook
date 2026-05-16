@@ -19,7 +19,7 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 # ══════════════════════════════════════════════
 # Trailing Stop הגדרות
 # ══════════════════════════════════════════════
-TRAIL_TRIGGER = 10.0   # כמה נקודות רווח לפני שהטריילינג מתחיל
+TRAIL_TRIGGER = 120.0  # כמה נקודות רווח לפני שהטריילינג מתחיל
 TRAIL_OFFSET  = 100.0  # כמה נקודות מאחורי הגבוה/נמוך ביותר ה-SL נשאר
 TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
