@@ -147,6 +147,17 @@ def update_stop_loss(symbol: str, new_sl: float) -> dict:
     }
     return bybit_post("/v5/position/trading-stop", params)
 
+def set_native_trailing_stop(symbol: str, trailing_stop: float, active_price: float) -> dict:
+    """מגדיר Trailing Stop מובנה של Bybit"""
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "trailingStop": str(round(trailing_stop, 2)),
+        "activePrice": str(round(active_price, 2)),
+        "positionIdx": 0
+    }
+    return bybit_post("/v5/position/trading-stop", params)
+
 def place_order(symbol, side, qty, stop_loss=None, take_profit=None, order_type="Market", price=None):
     params = {
         "category": "linear",
@@ -186,108 +197,9 @@ def cancel_all_orders(symbol):
     params = {"category": "linear", "symbol": symbol}
     return bybit_post("/v5/order/cancel-all", params)
 
-# ══════════════════════════════════════════════
-# Trailing Stop Thread — עוקב אחרי פוזיציות ומעדכן SL
-# ══════════════════════════════════════════════
-def trailing_stop_worker():
-    """
-    רץ ברקע כל 30 שניות.
-    לכל סימבול עם trailing פעיל:
-      - מביא מחיר נוכחי
-      - אם Long: אם מחיר > entry + TRAIL_TRIGGER → עדכן SL = best_price - TRAIL_OFFSET
-      - אם Short: אם מחיר < entry - TRAIL_TRIGGER → עדכן SL = best_price + TRAIL_OFFSET
-      - SL רק מתקדם, אף פעם לא חוזר אחורה
-    """
-    print("[TRAIL] Trailing Stop Worker started")
-    while True:
-        time.sleep(TRAIL_CHECK_INTERVAL)
-        with trailing_lock:
-            symbols = list(trailing_state.keys())
-
-        for symbol in symbols:
-            try:
-                with trailing_lock:
-                    state = trailing_state.get(symbol)
-                    if not state:
-                        continue
-
-                # בדוק שהפוזיציה עדיין קיימת
-                pos = get_position(symbol)
-                if not pos.get("has_position"):
-                    print(f"[TRAIL] {symbol}: Position closed — removing trailing state")
-                    with trailing_lock:
-                        trailing_state.pop(symbol, None)
-                    continue
-
-                mark_price = get_mark_price(symbol)
-                if mark_price == 0:
-                    continue
-
-                with trailing_lock:
-                    state = trailing_state.get(symbol)
-                    if not state:
-                        continue
-
-                    side       = state["side"]      # "Buy" or "Sell"
-                    entry      = state["entry"]
-                    best_price = state["best_price"]
-                    current_sl = state["sl"]
-
-                    if side == "Buy":
-                        # Long: עדכן best_price אם המחיר עלה
-                        if mark_price > best_price:
-                            state["best_price"] = mark_price
-                            best_price = mark_price
-                            print(f"[TRAIL] {symbol} LONG: new best_price={best_price:.2f}")
-
-                        # בדוק אם הטריילינג צריך להתחיל/להתקדם
-                        profit_pts = best_price - entry
-                        if profit_pts >= TRAIL_TRIGGER:
-                            if not state.get("active"):
-                                state["active"] = True
-                                print(f"[TRAIL] {symbol} LONG: Trailing ACTIVATED! profit={profit_pts:.2f} pts")
-                            new_sl = round(best_price - TRAIL_OFFSET, 2)
-                            # SL רק עולה — אף פעם לא יורד
-                            if new_sl > current_sl:
-                                state["sl"] = new_sl
-                                print(f"[TRAIL] {symbol} LONG: price={mark_price:.2f}, best={best_price:.2f}, new SL={new_sl:.2f} (was {current_sl:.2f})")
-                                result = update_stop_loss(symbol, new_sl)
-                                print(f"[TRAIL] Update SL result: {result}")
-                        else:
-                            print(f"[TRAIL] {symbol} LONG: waiting for trigger, profit={profit_pts:.2f}/{TRAIL_TRIGGER} pts")
-
-                    elif side == "Sell":
-                        # Short: עדכן best_price אם המחיר ירד
-                        if mark_price < best_price:
-                            state["best_price"] = mark_price
-                            best_price = mark_price
-                            print(f"[TRAIL] {symbol} SHORT: new best_price={best_price:.2f}")
-
-                        # בדוק אם הטריילינג צריך להתחיל/להתקדם
-                        profit_pts = entry - best_price
-                        if profit_pts >= TRAIL_TRIGGER:
-                            if not state.get("active"):
-                                state["active"] = True
-                                print(f"[TRAIL] {symbol} SHORT: Trailing ACTIVATED! profit={profit_pts:.2f} pts")
-                            new_sl = round(best_price + TRAIL_OFFSET, 2)
-                            # SL רק יורד — אף פעם לא עולה
-                            if new_sl < current_sl:
-                                state["sl"] = new_sl
-                                print(f"[TRAIL] {symbol} SHORT: price={mark_price:.2f}, best={best_price:.2f}, new SL={new_sl:.2f} (was {current_sl:.2f})")
-                                result = update_stop_loss(symbol, new_sl)
-                                print(f"[TRAIL] Update SL result: {result}")
-                        else:
-                            print(f"[TRAIL] {symbol} SHORT: waiting for trigger, profit={profit_pts:.2f}/{TRAIL_TRIGGER} pts")
-
-            except Exception as e:
-                print(f"[TRAIL] Error processing {symbol}: {e}")
-
 # הפעלת threads
 keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
 keep_alive_thread.start()
-
-trailing_thread = threading.Thread(target=trailing_stop_worker, daemon=True)
-trailing_thread.start()
 
 # ══════════════════════════════════════════════
 # Routes
@@ -347,37 +259,23 @@ def webhook():
             result = place_order(symbol, "Buy", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing לפוזיציה החדשה
+            # הפעל Trailing מובנה של Bybit
             if result.get("retCode") == 0 or result.get("result"):
                 entry_price = get_mark_price(symbol)
-                initial_sl  = float(sl) if sl else (entry_price - TRAIL_OFFSET)
-                with trailing_lock:
-                    trailing_state[symbol] = {
-                        "side":       "Buy",
-                        "entry":      entry_price,
-                        "best_price": entry_price,
-                        "sl":         initial_sl,
-                        "active":     True
-                    }
-                print(f"[TRAIL] Started trailing for {symbol} LONG @ {entry_price:.2f}, initial SL={initial_sl:.2f}")
+                active_price = entry_price + TRAIL_TRIGGER
+                ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
+                print(f"[TRAIL] Set native trailing stop for {symbol} LONG: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
 
         elif action == "sell" and sentiment == "short":
             result = place_order(symbol, "Sell", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing לפוזיציה החדשה
+            # הפעל Trailing מובנה של Bybit
             if result.get("retCode") == 0 or result.get("result"):
                 entry_price = get_mark_price(symbol)
-                initial_sl  = float(sl) if sl else (entry_price + TRAIL_OFFSET)
-                with trailing_lock:
-                    trailing_state[symbol] = {
-                        "side":       "Sell",
-                        "entry":      entry_price,
-                        "best_price": entry_price,
-                        "sl":         initial_sl,
-                        "active":     True
-                    }
-                print(f"[TRAIL] Started trailing for {symbol} SHORT @ {entry_price:.2f}, initial SL={initial_sl:.2f}")
+                active_price = entry_price - TRAIL_TRIGGER
+                ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
+                print(f"[TRAIL] Set native trailing stop for {symbol} SHORT: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
 
         elif action == "exit" or sentiment == "flat":
             result = close_position(symbol, sentiment, qty)
