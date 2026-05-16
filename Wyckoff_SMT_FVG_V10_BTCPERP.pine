@@ -208,7 +208,7 @@ short_entry_msg = '{"ticker": "BTCPERP", "action": "sell", "sentiment": "short",
 // ══════════════════════════════════════════════
 if enter_long
     strategy.entry("Long", strategy.long, qty=trade_qty, alert_message=long_entry_msg)
-    strategy.exit("XL", from_entry="Long", stop=long_sl, trail_points=120, trail_offset=100)
+    strategy.exit("XL", from_entry="Long", stop=long_sl, trail_points=150, trail_offset=50)
 
 // ══════════════════════════════════════════════
 // כניסת SHORT
@@ -216,7 +216,7 @@ if enter_long
 // ══════════════════════════════════════════════
 if enter_short
     strategy.entry("Short", strategy.short, qty=trade_qty, alert_message=short_entry_msg)
-    strategy.exit("XS", from_entry="Short", stop=short_sl, trail_points=120, trail_offset=100)
+    strategy.exit("XS", from_entry="Short", stop=short_sl, trail_points=150, trail_offset=50)
 
 // ══════════════════════════════════════════════
 // ויזואל — סימני כניסה
