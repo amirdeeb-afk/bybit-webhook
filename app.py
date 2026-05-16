@@ -242,16 +242,8 @@ def webhook():
         # ══════════════════════════════════════════
         # TradingView V10 תמיד סוגר עסקה ישנה לפני שפותח חדשה.
         # לכן: כשמגיע entry חדש — סגור כל פוזיציה פתוחה (בכל כיוון) ופתח חדשה.
-        # אבל: אם הפוזיציה נפתחה לפני פחות מ-COOLDOWN_SECONDS — דלג (מניעת סגירה מיידית).
+        # Cooldown: מונע פתיחת פוזיציה חדשה בתוך 30 שניות מהפתיחה האחרונה (אבל תמיד מאפשר סגירה).
         if action in ("buy", "sell"):
-            # בדיקת Cooldown
-            open_ts = position_open_time.get(symbol, 0)
-            elapsed = time.time() - open_ts
-            if elapsed < COOLDOWN_SECONDS:
-                msg = f"Cooldown active for {symbol}: {elapsed:.1f}s < {COOLDOWN_SECONDS}s — skipping entry"
-                print(f"[COOLDOWN] {msg}")
-                return jsonify({"status": "skipped", "reason": msg})
-
             pos = get_position(symbol)
             print(f"[POSITION CHECK] {symbol}: {pos}")
             if pos.get("has_position"):
@@ -261,8 +253,16 @@ def webhook():
                 print(f"[CLOSE BEFORE ENTRY] Close result: {close_result}")
                 with trailing_lock:
                     trailing_state.pop(symbol, None)
+                position_open_time.pop(symbol, None)  # נקה זמן פתיחה אחרי סגירה
                 time.sleep(0.5)
             else:
+                # אין פוזיציה פתוחה — בדוק Cooldown לפני פתיחה חדשה
+                open_ts = position_open_time.get(symbol, 0)
+                elapsed = time.time() - open_ts
+                if elapsed < COOLDOWN_SECONDS:
+                    msg = f"Cooldown active for {symbol}: {elapsed:.1f}s < {COOLDOWN_SECONDS}s — skipping new entry (no position open)"
+                    print(f"[COOLDOWN] {msg}")
+                    return jsonify({"status": "skipped", "reason": msg})
                 print(f"[NEW ENTRY] No existing position, proceeding with fresh entry")
 
         if action == "buy" and sentiment == "long":
