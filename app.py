@@ -19,11 +19,12 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 # ══════════════════════════════════════════════
 # Trailing Stop הגדרות
 # ══════════════════════════════════════════════
-# V16 — ערכים תואמים בדיוק ל-Pine Script V16 (trail_pts=222, trail_off=11)
-# TradingView: trail_points=222 = ה-SL נשמר 222 נקודות מאחורי השיא
-# Bybit: trailingStop=222 = offset מהשיא, activePrice = מחיר כניסה (מיידי)
-TRAIL_TRIGGER = 0.0    # 0 = הטריילינג מתחיל מיד עם הכניסה (כמו TradingView trail_points)
-TRAIL_OFFSET  = 222.0  # 222 נקודות Distance — הטריילינג עוקב 222 נקודות מאחורי השיא
+# הגדרות Trailing Stop:
+# TRAIL_ACTIVATION = 222 נקודות רווח מהכניסה לפני שהטריילינג מופעל
+# TRAIL_DISTANCE  = 22  נקודות מהשיא שיסגור את העסקה
+TRAIL_ACTIVATION = 222.0  # הטריילינג מופעל רק אחרי 222 נקודות רווח
+TRAIL_DISTANCE   = 22.0   # 22 נקודות מהשיא — יסגור בירידה של 22 נקודות מהשיא
+TRAIL_OFFSET     = TRAIL_DISTANCE  # בשימוש לאחור בקוד (תאימות אחורה)
 TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
 # מילון לשמירת מצב הטריילינג לכל סימבול
@@ -299,9 +300,11 @@ def webhook():
                 for attempt in range(1, 4):
                     time.sleep(attempt)  # 1s, 2s, 3s
                     current_price = get_mark_price(symbol)
-                    active_price = current_price if current_price > 0 else float(sl) - TRAIL_OFFSET if sl else 0
-                    ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                    print(f"[TRAIL] SHORT attempt {attempt}: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                    entry_price = current_price if current_price > 0 else 0
+                    # activePrice = entry - 222 נקודות (הטריילינג מופעל רק אחרי 222 נקודות רווח ב-SHORT)
+                    active_price = round(entry_price - TRAIL_ACTIVATION, 2)
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
+                    print(f"[TRAIL] SHORT attempt {attempt}: distance={TRAIL_DISTANCE}, activation={active_price:.2f} (entry-{TRAIL_ACTIVATION}). Result: {ts_result}")
                     if ts_result.get('retCode') == 0:
                         print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
                         break
