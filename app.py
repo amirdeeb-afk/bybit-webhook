@@ -161,11 +161,15 @@ def set_native_trailing_stop(symbol: str, trailing_stop: float, active_price: fl
     params = {
         "category": "linear",
         "symbol": symbol,
+        "tpslMode": "Full",          # שדה חובה לפי תיעוד Bybit
         "trailingStop": str(round(trailing_stop, 2)),
         "activePrice": str(round(active_price, 2)),
         "positionIdx": 0
     }
-    return bybit_post("/v5/position/trading-stop", params)
+    result = bybit_post("/v5/position/trading-stop", params)
+    print(f"[TRAIL-API] Params sent: {params}")
+    print(f"[TRAIL-API] Response: {result}")
+    return result
 
 def place_order(symbol, side, qty, stop_loss=None, take_profit=None, order_type="Market", price=None):
     params = {
