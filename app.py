@@ -598,6 +598,11 @@ def trail_debug():
 
     return jsonify({"status": "ok", "debug": debug_results})
 
+@app.route("/ping", methods=["GET"])
+def ping():
+    """Keepalive endpoint — called every 14 minutes by external cron to prevent Render sleep"""
+    return jsonify({"status": "pong", "time": time.time()})
+
 @app.route("/", methods=["GET"])
 def health():
     with trailing_lock:
