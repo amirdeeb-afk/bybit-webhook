@@ -19,8 +19,11 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 # ══════════════════════════════════════════════
 # Trailing Stop הגדרות
 # ══════════════════════════════════════════════
-TRAIL_TRIGGER = 250.0  # כמה נקודות רווח לפני שהטריילינג מתחיל
-TRAIL_OFFSET  = 100.0   # כמה נקודות מאחורי הגבוה/נמוך ביותר ה-SL נשאר
+# V16 — ערכים תואמים בדיוק ל-Pine Script V16 (trail_pts=222, trail_off=11)
+# TradingView: trail_points=222 = ה-SL נשמר 222 נקודות מאחורי השיא
+# Bybit: trailingStop=222 = offset מהשיא, activePrice = מחיר כניסה (מיידי)
+TRAIL_TRIGGER = 0.0    # 0 = הטריילינג מתחיל מיד עם הכניסה (כמו TradingView trail_points)
+TRAIL_OFFSET  = 222.0  # 222 נקודות מאחורי השיא — תואם ל-trail_points=222 ב-TradingView
 TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
 # מילון לשמירת מצב הטריילינג לכל סימבול
@@ -262,7 +265,8 @@ def webhook():
             if result.get("retCode") == 0 or result.get("result"):
                 position_open_time[symbol] = time.time()
                 entry_price = get_mark_price(symbol)
-                active_price = entry_price + TRAIL_TRIGGER
+                # TRAIL_TRIGGER=0 או קטן מאוד — הטריילינג מתחיל מיד ממחיר הכניסה
+                active_price = entry_price  # מתחיל מיד כמו TradingView trail_points
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
                 print(f"[TRAIL] Set native trailing stop for {symbol} LONG: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
 
@@ -274,7 +278,8 @@ def webhook():
             if result.get("retCode") == 0 or result.get("result"):
                 position_open_time[symbol] = time.time()
                 entry_price = get_mark_price(symbol)
-                active_price = entry_price - TRAIL_TRIGGER
+                # TRAIL_TRIGGER=0 או קטן מאוד — הטריילינג מתחיל מיד ממחיר הכניסה
+                active_price = entry_price  # מתחיל מיד כמו TradingView trail_points
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
                 print(f"[TRAIL] Set native trailing stop for {symbol} SHORT: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
 
