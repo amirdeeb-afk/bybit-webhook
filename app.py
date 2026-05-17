@@ -23,7 +23,7 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 # TradingView: trail_points=222 = ה-SL נשמר 222 נקודות מאחורי השיא
 # Bybit: trailingStop=222 = offset מהשיא, activePrice = מחיר כניסה (מיידי)
 TRAIL_TRIGGER = 0.0    # 0 = הטריילינג מתחיל מיד עם הכניסה (כמו TradingView trail_points)
-TRAIL_OFFSET  = 22.0   # 22 נקודות offset — Bybit Trailing Distance=222, Offset=22
+TRAIL_OFFSET  = 222.0  # 222 נקודות Distance — הטריילינג עוקב 222 נקודות מאחורי השיא
 TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
 # מילון לשמירת מצב הטריילינג לכל סימבול
