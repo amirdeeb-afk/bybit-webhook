@@ -272,17 +272,32 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # Retry trailing stop up to 3 times (handles Render cold start delay)
-                for attempt in range(1, 4):
-                    time.sleep(attempt)  # 1s, 2s, 3s
-                    current_price = get_mark_price(symbol)
-                    active_price = current_price if current_price > 0 else float(sl) + TRAIL_OFFSET if sl else 0
-                    ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                    print(f"[TRAIL] LONG attempt {attempt}: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                # Retry trailing stop up to 5 times with longer waits
+                trail_set = False
+                for attempt in range(1, 6):
+                    wait_time = attempt * 2  # 2s, 4s, 6s, 8s, 10s
+                    print(f"[TRAIL] LONG waiting {wait_time}s before attempt {attempt}...")
+                    time.sleep(wait_time)
+                    # קבל את מחיר הכניסה האמיתי מהפוזיציה
+                    pos_info = get_position(symbol)
+                    if pos_info.get('has_position'):
+                        entry_price = pos_info.get('entry_price', 0)
+                    else:
+                        entry_price = get_mark_price(symbol)
+                    if entry_price <= 0:
+                        print(f"[TRAIL] LONG attempt {attempt}: could not get entry price, retrying...")
+                        continue
+                    # activation = entry + 222 נקודות
+                    active_price = round(entry_price + TRAIL_ACTIVATION, 2)
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
+                    print(f"[TRAIL] LONG attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
                     if ts_result.get('retCode') == 0:
                         print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        trail_set = True
                         break
-                    print(f"[TRAIL] ❌ Attempt {attempt} failed, retrying...")
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                if not trail_set:
+                    print(f"[TRAIL] ⚠️ All attempts failed — trailing stop NOT set for LONG {symbol}")
             else:
                 print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
@@ -296,19 +311,32 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # Retry trailing stop up to 3 times (handles Render cold start delay)
-                for attempt in range(1, 4):
-                    time.sleep(attempt)  # 1s, 2s, 3s
-                    current_price = get_mark_price(symbol)
-                    entry_price = current_price if current_price > 0 else 0
-                    # activePrice = entry - 222 נקודות (הטריילינג מופעל רק אחרי 222 נקודות רווח ב-SHORT)
+                # Retry trailing stop up to 5 times with longer waits
+                trail_set = False
+                for attempt in range(1, 6):
+                    wait_time = attempt * 2  # 2s, 4s, 6s, 8s, 10s
+                    print(f"[TRAIL] SHORT waiting {wait_time}s before attempt {attempt}...")
+                    time.sleep(wait_time)
+                    # קבל את מחיר הכניסה האמיתי מהפוזיציה
+                    pos_info = get_position(symbol)
+                    if pos_info.get('has_position'):
+                        entry_price = pos_info.get('entry_price', 0)
+                    else:
+                        entry_price = get_mark_price(symbol)
+                    if entry_price <= 0:
+                        print(f"[TRAIL] SHORT attempt {attempt}: could not get entry price, retrying...")
+                        continue
+                    # activation = entry - 222 נקודות (ב-SHORT הטריילינג מופעל אחרי 222 נקודות ירידה)
                     active_price = round(entry_price - TRAIL_ACTIVATION, 2)
                     ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
-                    print(f"[TRAIL] SHORT attempt {attempt}: distance={TRAIL_DISTANCE}, activation={active_price:.2f} (entry-{TRAIL_ACTIVATION}). Result: {ts_result}")
+                    print(f"[TRAIL] SHORT attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
                     if ts_result.get('retCode') == 0:
                         print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        trail_set = True
                         break
-                    print(f"[TRAIL] ❌ Attempt {attempt} failed, retrying...")
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                if not trail_set:
+                    print(f"[TRAIL] ⚠️ All attempts failed — trailing stop NOT set for SHORT {symbol}")
             else:
                 print(f"[ORDER] SHORT order failed or retCode not 0: {result}")
 
