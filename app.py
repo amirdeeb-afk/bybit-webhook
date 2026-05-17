@@ -237,32 +237,21 @@ def webhook():
         tp        = data.get("takeProfit")
         price     = data.get("price")
 
-        # ══════════════════════════════════════
-        # סגירת פוזיציה קיימת לפני כל כניסה חדשה
-        # ══════════════════════════════════════════
-        # TradingView V10 תמיד סוגר עסקה ישנה לפני שפותח חדשה.
-        # לכן: כשמגיע entry חדש — סגור כל פוזיציה פתוחה (בכל כיוון) ופתח חדשה.
-        # Cooldown: מונע פתיחת פוזיציה חדשה בתוך 30 שניות מהפתיחה האחרונה (אבל תמיד מאפשר סגירה).
+        # ══════════════════════════════════════════════════════
+        # בדיקת פוזיציה פתוחה — אם יש פוזיציה, מתעלמים מהסיגנל
+        # ══════════════════════════════════════════════════════
+        # V16 ואילך: הפוזיציה נסגרת רק ע"י Trailing Stop של Bybit.
+        # אם מגיע סיגנל כניסה חדש בזמן שיש פוזיציה פתוחה — מתעלמים ממנו.
+        # זה מונע: (1) כניסה כפולה באותו כיוון, (2) סגירה+פתיחה בכיוון הפוך.
         if action in ("buy", "sell"):
             pos = get_position(symbol)
             print(f"[POSITION CHECK] {symbol}: {pos}")
             if pos.get("has_position"):
-                existing_side = pos.get("side", "").lower()
-                print(f"[CLOSE BEFORE ENTRY] Closing existing {existing_side} position before new {action} entry")
-                close_result = close_position(symbol, existing_side, pos.get("size"))
-                print(f"[CLOSE BEFORE ENTRY] Close result: {close_result}")
-                with trailing_lock:
-                    trailing_state.pop(symbol, None)
-                position_open_time.pop(symbol, None)  # נקה זמן פתיחה אחרי סגירה
-                time.sleep(0.5)
+                existing_side = pos.get("side", "")
+                msg = f"Position already open ({existing_side}) — ignoring new {action} signal. Bybit trailing will manage exit."
+                print(f"[SKIP] {msg}")
+                return jsonify({"status": "skipped", "reason": msg})
             else:
-                # אין פוזיציה פתוחה — בדוק Cooldown לפני פתיחה חדשה
-                open_ts = position_open_time.get(symbol, 0)
-                elapsed = time.time() - open_ts
-                if elapsed < COOLDOWN_SECONDS:
-                    msg = f"Cooldown active for {symbol}: {elapsed:.1f}s < {COOLDOWN_SECONDS}s — skipping new entry (no position open)"
-                    print(f"[COOLDOWN] {msg}")
-                    return jsonify({"status": "skipped", "reason": msg})
                 print(f"[NEW ENTRY] No existing position, proceeding with fresh entry")
 
         if action == "buy" and sentiment == "long":
