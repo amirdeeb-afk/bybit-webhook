@@ -271,12 +271,17 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                time.sleep(1)  # המתן שניה אחת לפני שליחת Trailing
-                current_price = get_mark_price(symbol)
-                # activePrice = מחיר נוכחי (לא מחיר כניסה) כדי ש-Bybit יקבל את הבקשה
-                active_price = current_price if current_price > 0 else float(sl) + TRAIL_OFFSET if sl else 0
-                ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                print(f"[TRAIL] LONG trailing stop sent: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                # Retry trailing stop up to 3 times (handles Render cold start delay)
+                for attempt in range(1, 4):
+                    time.sleep(attempt)  # 1s, 2s, 3s
+                    current_price = get_mark_price(symbol)
+                    active_price = current_price if current_price > 0 else float(sl) + TRAIL_OFFSET if sl else 0
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
+                    print(f"[TRAIL] LONG attempt {attempt}: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                    if ts_result.get('retCode') == 0:
+                        print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        break
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed, retrying...")
             else:
                 print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
@@ -290,12 +295,17 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                time.sleep(1)  # המתן שניה אחת לפני שליחת Trailing
-                current_price = get_mark_price(symbol)
-                # activePrice = מחיר נוכחי (לא מחיר כניסה) כדי ש-Bybit יקבל את הבקשה
-                active_price = current_price if current_price > 0 else float(sl) - TRAIL_OFFSET if sl else 0
-                ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                print(f"[TRAIL] SHORT trailing stop sent: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                # Retry trailing stop up to 3 times (handles Render cold start delay)
+                for attempt in range(1, 4):
+                    time.sleep(attempt)  # 1s, 2s, 3s
+                    current_price = get_mark_price(symbol)
+                    active_price = current_price if current_price > 0 else float(sl) - TRAIL_OFFSET if sl else 0
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
+                    print(f"[TRAIL] SHORT attempt {attempt}: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                    if ts_result.get('retCode') == 0:
+                        print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        break
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed, retrying...")
             else:
                 print(f"[ORDER] SHORT order failed or retCode not 0: {result}")
 
