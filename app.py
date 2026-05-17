@@ -261,27 +261,39 @@ def webhook():
             result = place_order(symbol, "Buy", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing מובנה של Bybit + רשום זמן פתיחה
-            if result.get("retCode") == 0 or result.get("result"):
+            print(f"[ORDER] LONG result: {result}")
+            # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
+            ret_code = result.get("retCode", result.get("ret_code", -1))
+            order_ok = str(ret_code) == "0"
+            if order_ok:
                 position_open_time[symbol] = time.time()
-                entry_price = get_mark_price(symbol)
-                # TRAIL_TRIGGER=0 או קטן מאוד — הטריילינג מתחיל מיד ממחיר הכניסה
-                active_price = entry_price  # מתחיל מיד כמו TradingView trail_points
+                time.sleep(1)  # המתן שניה אחת לפני שליחת Trailing
+                current_price = get_mark_price(symbol)
+                # activePrice = מחיר נוכחי (לא מחיר כניסה) כדי ש-Bybit יקבל את הבקשה
+                active_price = current_price if current_price > 0 else float(sl) + TRAIL_OFFSET if sl else 0
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                print(f"[TRAIL] Set native trailing stop for {symbol} LONG: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                print(f"[TRAIL] LONG trailing stop sent: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+            else:
+                print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
         elif action == "sell" and sentiment == "short":
             result = place_order(symbol, "Sell", qty,
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
-            # הפעל Trailing מובנה של Bybit + רשום זמן פתיחה
-            if result.get("retCode") == 0 or result.get("result"):
+            print(f"[ORDER] SHORT result: {result}")
+            # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
+            ret_code = result.get("retCode", result.get("ret_code", -1))
+            order_ok = str(ret_code) == "0"
+            if order_ok:
                 position_open_time[symbol] = time.time()
-                entry_price = get_mark_price(symbol)
-                # TRAIL_TRIGGER=0 או קטן מאוד — הטריילינג מתחיל מיד ממחיר הכניסה
-                active_price = entry_price  # מתחיל מיד כמו TradingView trail_points
+                time.sleep(1)  # המתן שניה אחת לפני שליחת Trailing
+                current_price = get_mark_price(symbol)
+                # activePrice = מחיר נוכחי (לא מחיר כניסה) כדי ש-Bybit יקבל את הבקשה
+                active_price = current_price if current_price > 0 else float(sl) - TRAIL_OFFSET if sl else 0
                 ts_result = set_native_trailing_stop(symbol, TRAIL_OFFSET, active_price)
-                print(f"[TRAIL] Set native trailing stop for {symbol} SHORT: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+                print(f"[TRAIL] SHORT trailing stop sent: offset={TRAIL_OFFSET}, active_price={active_price:.2f}. Result: {ts_result}")
+            else:
+                print(f"[ORDER] SHORT order failed or retCode not 0: {result}")
 
         elif action == "exit" or sentiment == "flat":
             result = close_position(symbol, sentiment, qty)
