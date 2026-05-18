@@ -19,24 +19,24 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 # ══════════════════════════════════════════════
 # Trailing Stop הגדרות
 # ══════════════════════════════════════════════
-# TRAIL_ACTIVATION = 222 נקודות רווח מהכניסה — רק אז מגדירים trailing stop
-# TRAIL_DISTANCE   = 22  נקודות מהשיא — מרחק הטריילינג
-TRAIL_ACTIVATION     = 222.0   # נקודות רווח לפני הפעלת trailing
-TRAIL_DISTANCE       = 22.0    # נקודות מרחק מהשיא
-TRAIL_CHECK_INTERVAL = 30      # בדיקה כל 30 שניות
+# הגדרות Trailing Stop:
+# TRAIL_ACTIVATION = 222 נקודות רווח מהכניסה לפני שהטריילינג מופעל
+# TRAIL_DISTANCE  = 22  נקודות מהשיא שיסגור את העסקה
+TRAIL_ACTIVATION = 222.0  # הטריילינג מופעל רק אחרי 222 נקודות רווח
+TRAIL_DISTANCE   = 22.0   # 22 נקודות מהשיא — יסגור בירידה של 22 נקודות מהשיא
+TRAIL_OFFSET     = TRAIL_DISTANCE  # בשימוש לאחור בקוד (תאימות אחורה)
+TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
-# ══════════════════════════════════════════════
-# pending_trail — פוזיציות שממתינות להפעלת trailing
-# { "BTCPERP": { "side": "Buy"/"Sell", "entry": 80000.0, "activation_target": 80222.0 } }
-# ══════════════════════════════════════════════
-pending_trail = {}
-pending_trail_lock = threading.Lock()
+# מילון לשמירת מצב הטריילינג לכל סימבול
+# { "BTCPERP": { "side": "Buy", "entry": 80000, "best_price": 80000, "sl": 79993, "active": True } }
+trailing_state = {}
+trailing_lock = threading.Lock()
 
 # ══════════════════════════════════════════════
 # Cooldown — מניעת סגירה מיידית של פוזיציה חדשה
 # ══════════════════════════════════════════════
-COOLDOWN_SECONDS = 30
-position_open_time = {}
+COOLDOWN_SECONDS = 30  # לא לסגור פוזיציה שנפתחה לפני פחות מ-30 שניות
+position_open_time = {}  # { "BTCPERP": timestamp }
 
 # ══════════════════════════════════════════════
 # Keep-Alive — מונע שינה של Render Free Tier
@@ -146,18 +146,25 @@ def get_mark_price(symbol: str) -> float:
         pass
     return 0.0
 
-def set_native_trailing_stop(symbol: str, trailing_stop: float) -> dict:
-    """
-    מגדיר Trailing Stop מובנה של Bybit — ללא activePrice.
-    כשמגדירים ללא activePrice, Bybit מפעיל את הטריילינג מיד מהמחיר הנוכחי.
-    אנחנו קוראים לפונקציה זו רק כשהמחיר כבר הגיע ל-Entry+222,
-    כך שהטריילינג מופעל בנקודה הנכונה.
-    """
+def update_stop_loss(symbol: str, new_sl: float) -> dict:
+    """מעדכן SL על פוזיציה קיימת ב-Bybit"""
     params = {
         "category": "linear",
         "symbol": symbol,
-        "tpslMode": "Full",
+        "stopLoss": str(round(new_sl, 2)),
+        "positionIdx": 0,
+        "slTriggerBy": "MarkPrice"
+    }
+    return bybit_post("/v5/position/trading-stop", params)
+
+def set_native_trailing_stop(symbol: str, trailing_stop: float, active_price: float) -> dict:
+    """מגדיר Trailing Stop מובנה של Bybit"""
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "tpslMode": "Full",          # שדה חובה לפי תיעוד Bybit
         "trailingStop": str(round(trailing_stop, 2)),
+        "activePrice": str(round(active_price, 2)),
         "positionIdx": 0
     }
     result = bybit_post("/v5/position/trading-stop", params)
@@ -204,92 +211,16 @@ def cancel_all_orders(symbol):
     params = {"category": "linear", "symbol": symbol}
     return bybit_post("/v5/order/cancel-all", params)
 
-# ══════════════════════════════════════════════
-# Activation Monitor Thread
-# ══════════════════════════════════════════════
-def activation_monitor():
-    """
-    Thread רץ ברקע כל TRAIL_CHECK_INTERVAL שניות.
-    בודק כל פוזיציה ב-pending_trail:
-      - אם המחיר הגיע ל-activation_target → מגדיר trailing stop (distance=22, ללא activePrice)
-      - אם הפוזיציה נסגרה → מסיר מהרשימה
-    """
-    print("[ACTIVATION-MONITOR] Thread started")
-    while True:
-        time.sleep(TRAIL_CHECK_INTERVAL)
-        try:
-            with pending_trail_lock:
-                symbols = list(pending_trail.keys())
-
-            for symbol in symbols:
-                try:
-                    with pending_trail_lock:
-                        state = pending_trail.get(symbol)
-                    if not state:
-                        continue
-
-                    side             = state["side"]
-                    entry            = state["entry"]
-                    activation_target = state["activation_target"]
-
-                    # בדוק אם הפוזיציה עדיין פתוחה
-                    pos = get_position(symbol)
-                    if not pos.get("has_position"):
-                        print(f"[ACTIVATION-MONITOR] {symbol}: position closed, removing from pending")
-                        with pending_trail_lock:
-                            pending_trail.pop(symbol, None)
-                        continue
-
-                    # בדוק מחיר נוכחי
-                    mark_price = get_mark_price(symbol)
-                    if mark_price <= 0:
-                        print(f"[ACTIVATION-MONITOR] {symbol}: could not get mark price, skipping")
-                        continue
-
-                    # בדוק אם הגענו ל-activation target
-                    if side == "Buy":
-                        reached = mark_price >= activation_target
-                    else:  # Sell / Short
-                        reached = mark_price <= activation_target
-
-                    print(f"[ACTIVATION-MONITOR] {symbol} {side}: mark={mark_price:.2f}, "
-                          f"activation_target={activation_target:.2f}, reached={reached}")
-
-                    if reached:
-                        print(f"[ACTIVATION-MONITOR] ✅ {symbol}: activation target reached! "
-                              f"Setting trailing stop distance={TRAIL_DISTANCE}")
-                        ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE)
-                        print(f"[ACTIVATION-MONITOR] Trail set result: {ts_result}")
-                        if ts_result.get("retCode") == 0:
-                            print(f"[ACTIVATION-MONITOR] ✅ Trailing stop set successfully for {symbol}")
-                            with pending_trail_lock:
-                                pending_trail.pop(symbol, None)
-                        else:
-                            print(f"[ACTIVATION-MONITOR] ❌ Failed to set trailing stop: {ts_result}")
-                            # נשאר ב-pending ונסה שוב בסיבוב הבא
-
-                except Exception as e:
-                    print(f"[ACTIVATION-MONITOR] Error processing {symbol}: {e}")
-                    print(traceback.format_exc())
-
-        except Exception as e:
-            print(f"[ACTIVATION-MONITOR] Outer error: {e}")
-            print(traceback.format_exc())
-
 # הפעלת threads
 keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
 keep_alive_thread.start()
-
-activation_monitor_thread = threading.Thread(target=activation_monitor, daemon=True)
-activation_monitor_thread.start()
 
 # ══════════════════════════════════════════════
 # Routes
 # ══════════════════════════════════════════════
 @app.route("/ping", methods=["GET"])
 def ping():
-    """Keepalive endpoint — called every 14 minutes by external cron to prevent Render sleep"""
-    return jsonify({"status": "pong", "time": time.time()})
+    return jsonify({"status": "alive", "time": int(time.time())})
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -317,6 +248,9 @@ def webhook():
         # ══════════════════════════════════════════════════════
         # בדיקת פוזיציה פתוחה — אם יש פוזיציה, מתעלמים מהסיגנל
         # ══════════════════════════════════════════════════════
+        # V16 ואילך: הפוזיציה נסגרת רק ע"י Trailing Stop של Bybit.
+        # אם מגיע סיגנל כניסה חדש בזמן שיש פוזיציה פתוחה — מתעלמים ממנו.
+        # זה מונע: (1) כניסה כפולה באותו כיוון, (2) סגירה+פתיחה בכיוון הפוך.
         if action in ("buy", "sell"):
             pos = get_position(symbol)
             print(f"[POSITION CHECK] {symbol}: {pos}")
@@ -333,30 +267,37 @@ def webhook():
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
             print(f"[ORDER] LONG result: {result}")
+            # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
             ret_code = result.get("retCode", result.get("ret_code", -1))
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # קבל מחיר כניסה אמיתי מהפוזיציה (המתן קצת שהפקודה תתמלא)
-                time.sleep(2)
-                pos_info = get_position(symbol)
-                if pos_info.get("has_position"):
-                    entry_price = pos_info.get("entry_price", 0)
-                else:
-                    entry_price = get_mark_price(symbol)
-
-                if entry_price > 0:
-                    activation_target = round(entry_price + TRAIL_ACTIVATION, 2)
-                    with pending_trail_lock:
-                        pending_trail[symbol] = {
-                            "side": "Buy",
-                            "entry": entry_price,
-                            "activation_target": activation_target
-                        }
-                    print(f"[TRAIL] LONG registered for monitoring: entry={entry_price:.2f}, "
-                          f"activation_target={activation_target:.2f} (entry+{TRAIL_ACTIVATION})")
-                else:
-                    print(f"[TRAIL] LONG: could not get entry price — trailing NOT registered")
+                # Retry trailing stop up to 5 times with longer waits
+                trail_set = False
+                for attempt in range(1, 6):
+                    wait_time = attempt * 2  # 2s, 4s, 6s, 8s, 10s
+                    print(f"[TRAIL] LONG waiting {wait_time}s before attempt {attempt}...")
+                    time.sleep(wait_time)
+                    # קבל את מחיר הכניסה האמיתי מהפוזיציה
+                    pos_info = get_position(symbol)
+                    if pos_info.get('has_position'):
+                        entry_price = pos_info.get('entry_price', 0)
+                    else:
+                        entry_price = get_mark_price(symbol)
+                    if entry_price <= 0:
+                        print(f"[TRAIL] LONG attempt {attempt}: could not get entry price, retrying...")
+                        continue
+                    # activation = entry + 222 נקודות
+                    active_price = round(entry_price + TRAIL_ACTIVATION, 2)
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
+                    print(f"[TRAIL] LONG attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
+                    if ts_result.get('retCode') == 0:
+                        print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        trail_set = True
+                        break
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                if not trail_set:
+                    print(f"[TRAIL] ⚠️ All attempts failed — trailing stop NOT set for LONG {symbol}")
             else:
                 print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
@@ -365,30 +306,37 @@ def webhook():
                                  stop_loss=float(sl) if sl else None,
                                  take_profit=float(tp) if tp else None)
             print(f"[ORDER] SHORT result: {result}")
+            # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
             ret_code = result.get("retCode", result.get("ret_code", -1))
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # קבל מחיר כניסה אמיתי מהפוזיציה
-                time.sleep(2)
-                pos_info = get_position(symbol)
-                if pos_info.get("has_position"):
-                    entry_price = pos_info.get("entry_price", 0)
-                else:
-                    entry_price = get_mark_price(symbol)
-
-                if entry_price > 0:
-                    activation_target = round(entry_price - TRAIL_ACTIVATION, 2)
-                    with pending_trail_lock:
-                        pending_trail[symbol] = {
-                            "side": "Sell",
-                            "entry": entry_price,
-                            "activation_target": activation_target
-                        }
-                    print(f"[TRAIL] SHORT registered for monitoring: entry={entry_price:.2f}, "
-                          f"activation_target={activation_target:.2f} (entry-{TRAIL_ACTIVATION})")
-                else:
-                    print(f"[TRAIL] SHORT: could not get entry price — trailing NOT registered")
+                # Retry trailing stop up to 5 times with longer waits
+                trail_set = False
+                for attempt in range(1, 6):
+                    wait_time = attempt * 2  # 2s, 4s, 6s, 8s, 10s
+                    print(f"[TRAIL] SHORT waiting {wait_time}s before attempt {attempt}...")
+                    time.sleep(wait_time)
+                    # קבל את מחיר הכניסה האמיתי מהפוזיציה
+                    pos_info = get_position(symbol)
+                    if pos_info.get('has_position'):
+                        entry_price = pos_info.get('entry_price', 0)
+                    else:
+                        entry_price = get_mark_price(symbol)
+                    if entry_price <= 0:
+                        print(f"[TRAIL] SHORT attempt {attempt}: could not get entry price, retrying...")
+                        continue
+                    # activation = entry - 222 נקודות (ב-SHORT הטריילינג מופעל אחרי 222 נקודות ירידה)
+                    active_price = round(entry_price - TRAIL_ACTIVATION, 2)
+                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
+                    print(f"[TRAIL] SHORT attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
+                    if ts_result.get('retCode') == 0:
+                        print(f"[TRAIL] ✅ Trailing stop set on attempt {attempt}")
+                        trail_set = True
+                        break
+                    print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                if not trail_set:
+                    print(f"[TRAIL] ⚠️ All attempts failed — trailing stop NOT set for SHORT {symbol}")
             else:
                 print(f"[ORDER] SHORT order failed or retCode not 0: {result}")
 
@@ -422,75 +370,112 @@ def webhook():
 @app.route("/trail_status", methods=["GET"])
 def trail_status():
     """מציג את מצב הטריילינג הנוכחי"""
-    with pending_trail_lock:
+    with trailing_lock:
         return jsonify({
-            "pending_trail": pending_trail,
-            "trail_activation_pts": TRAIL_ACTIVATION,
-            "trail_distance_pts": TRAIL_DISTANCE
+            "trailing_state": trailing_state,
+            "trail_trigger": TRAIL_TRIGGER,
+            "trail_offset": TRAIL_OFFSET
         })
+
+@app.route("/trail_sync", methods=["GET"])
+def trail_sync():
+    """
+    סורק את כל הפוזיציות הפתוחות ב-Bybit ומזריק אותן לטריילינג אוטומטית.
+    שימושי כשפוזיציה נפתחה לפני שהשרת הופעל.
+    """
+    synced = []
+    skipped = []
+    try:
+        result = bybit_get("/v5/position/list", {"category": "linear", "settleCoin": "USDC"})
+        positions = result.get("result", {}).get("list", [])
+        for pos in positions:
+            size = float(pos.get("size", 0))
+            if size == 0:
+                continue
+            symbol     = pos.get("symbol")
+            side       = pos.get("side")          # "Buy" or "Sell"
+            entry      = float(pos.get("avgPrice", 0))
+            mark_price = float(pos.get("markPrice", 0))
+            current_sl = float(pos.get("stopLoss", 0)) if pos.get("stopLoss") else 0
+
+            with trailing_lock:
+                if symbol in trailing_state:
+                    skipped.append({"symbol": symbol, "reason": "already tracked"})
+                    continue
+                # best_price = המחיר הנוכחי (הטוב ביותר שידוע לנו)
+                best = mark_price if mark_price > 0 else entry
+                # SL ראשוני = SL הנוכחי ב-Bybit (אם קיים), אחרת חישוב לפי offset
+                if current_sl > 0:
+                    init_sl = current_sl
+                else:
+                    init_sl = (best - TRAIL_OFFSET) if side == "Buy" else (best + TRAIL_OFFSET)
+
+                trailing_state[symbol] = {
+                    "side":       side,
+                    "entry":      entry,
+                    "best_price": best,
+                    "sl":         init_sl,
+                    "active":     False,
+                    "synced":     True
+                }
+                synced.append({
+                    "symbol":     symbol,
+                    "side":       side,
+                    "entry":      entry,
+                    "mark_price": mark_price,
+                    "init_sl":    init_sl
+                })
+                print(f"[SYNC] Injected {symbol} {side} @ {entry:.2f}, mark={mark_price:.2f}, SL={init_sl:.2f}")
+
+        return jsonify({
+            "status":  "ok",
+            "synced":  synced,
+            "skipped": skipped
+        })
+    except Exception as e:
+        err = traceback.format_exc()
+        print(f"[SYNC ERROR] {err}")
+        return jsonify({"error": str(e), "traceback": err}), 500
 
 @app.route("/trail_inject", methods=["GET"])
 def trail_inject():
     """
-    הזרקה ידנית של פוזיציה לניטור trailing.
-    פרמטרים: symbol, side (Buy/Sell), entry
-    דוגמה: /trail_inject?symbol=BTCPERP&side=Buy&entry=79094.30
+    הזרקה ידנית של פוזיציה לטריילינג.
+    פרמטרים: symbol, side (Buy/Sell), entry, sl
+    דוגמה: /trail_inject?symbol=BTCUSDC&side=Buy&entry=79094.30&sl=78841.50
     """
     try:
         symbol = request.args.get("symbol", "BTCPERP")
         side   = request.args.get("side", "Buy")
         entry  = float(request.args.get("entry", 0))
+        sl     = float(request.args.get("sl", 0))
 
         if entry == 0:
             return jsonify({"error": "Missing entry price"}), 400
 
-        if side == "Buy":
-            activation_target = round(entry + TRAIL_ACTIVATION, 2)
-        else:
-            activation_target = round(entry - TRAIL_ACTIVATION, 2)
+        mark_price = get_mark_price(symbol)
+        best = mark_price if mark_price > 0 else entry
+        init_sl = sl if sl > 0 else ((best - TRAIL_OFFSET) if side == "Buy" else (best + TRAIL_OFFSET))
 
-        with pending_trail_lock:
-            pending_trail[symbol] = {
-                "side": side,
-                "entry": entry,
-                "activation_target": activation_target
+        with trailing_lock:
+            trailing_state[symbol] = {
+                "side":       side,
+                "entry":      entry,
+                "best_price": best,
+                "sl":         init_sl,
+                "active":     False,
+                "injected":   True
             }
 
-        print(f"[INJECT] {symbol} {side} @ {entry:.2f}, activation_target={activation_target:.2f}")
+        print(f"[INJECT] {symbol} {side} @ {entry:.2f}, mark={best:.2f}, SL={init_sl:.2f}")
         return jsonify({
-            "status": "ok",
-            "symbol": symbol,
-            "side": side,
-            "entry": entry,
-            "activation_target": activation_target,
-            "message": f"Position injected. Trailing will be set when price reaches {activation_target:.2f} ({TRAIL_ACTIVATION} pts from entry)"
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/trail_set_now", methods=["GET"])
-def trail_set_now():
-    """
-    מגדיר trailing stop מיד על הפוזיציה הפתוחה (ללא המתנה לactivation target).
-    שימושי לבדיקה ידנית.
-    פרמטר: symbol (ברירת מחדל: BTCPERP)
-    """
-    try:
-        symbol = request.args.get("symbol", "BTCPERP")
-        pos = get_position(symbol)
-        if not pos.get("has_position"):
-            return jsonify({"error": f"No open position for {symbol}"}), 400
-
-        result = set_native_trailing_stop(symbol, TRAIL_DISTANCE)
-        # הסר מניטור אם קיים
-        with pending_trail_lock:
-            pending_trail.pop(symbol, None)
-
-        return jsonify({
-            "status": "ok",
-            "symbol": symbol,
-            "trail_distance": TRAIL_DISTANCE,
-            "bybit_result": result
+            "status":     "ok",
+            "symbol":     symbol,
+            "side":       side,
+            "entry":      entry,
+            "mark_price": best,
+            "init_sl":    init_sl,
+            "message":    "Position injected into trailing stop. Trailing will activate after " + str(TRAIL_TRIGGER) + " points profit."
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -499,42 +484,167 @@ def trail_set_now():
 def positions_debug():
     """
     מחזיר את כל הפוזיציות הפתוחות מ-Bybit API (raw).
+    שימושי לגלות את שם הסימבול הנכון.
     """
     try:
+        # נסה ללא סימבול ספציפי
         result_all = bybit_get("/v5/position/list", {
             "category": "linear",
             "settleCoin": "USDC"
+        })
+        result_usdc = bybit_get("/v5/position/list", {
+            "category": "linear",
+            "symbol": "BTCPERP"
         })
         result_perp = bybit_get("/v5/position/list", {
             "category": "linear",
             "symbol": "BTCPERP"
         })
+        # סנן רק פוזיציות עם size > 0
         all_positions = result_all.get("result", {}).get("list", [])
         open_positions = [p for p in all_positions if float(p.get("size", 0)) > 0]
         return jsonify({
             "status": "ok",
             "open_positions_usdc_settle": open_positions,
+            "btcusdc_direct": result_usdc,
             "btcperp_direct": result_perp,
             "all_count": len(all_positions)
         })
     except Exception as e:
         return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
 
+@app.route("/trail_debug", methods=["GET"])
+def trail_debug():
+    """
+    מריץ מחזור אחד של הטריילינג ידנית ומחזיר תוצאות מפורטות.
+    שימושי לבדיקה שהטריילינג עובד כמו שצריך.
+    """
+    debug_results = []
+    with trailing_lock:
+        symbols = list(trailing_state.keys())
+
+    if not symbols:
+        return jsonify({"status": "no_positions", "message": "No positions in trailing state"})
+
+    for symbol in symbols:
+        result = {"symbol": symbol, "steps": []}
+        try:
+            with trailing_lock:
+                state = trailing_state.get(symbol)
+            if not state:
+                result["steps"].append("No state found")
+                continue
+
+            result["state_before"] = dict(state)
+
+            # בדוק פוזיציה
+            pos = get_position(symbol)
+            result["position"] = pos
+            result["steps"].append(f"Position check: has_position={pos.get('has_position')}")
+
+            if not pos.get("has_position"):
+                result["steps"].append("Position closed — would remove from trailing")
+                debug_results.append(result)
+                continue
+
+            # בדוק מחיר
+            mark_price = get_mark_price(symbol)
+            result["mark_price"] = mark_price
+            result["steps"].append(f"Mark price: {mark_price}")
+
+            if mark_price == 0:
+                result["steps"].append("Mark price is 0 — skipping")
+                debug_results.append(result)
+                continue
+
+            with trailing_lock:
+                state = trailing_state.get(symbol)
+                side       = state["side"]
+                entry      = state["entry"]
+                best_price = state["best_price"]
+                current_sl = state["sl"]
+
+                if side == "Buy":
+                    if mark_price > best_price:
+                        state["best_price"] = mark_price
+                        best_price = mark_price
+                        result["steps"].append(f"Updated best_price to {best_price}")
+
+                    profit_pts = best_price - entry
+                    result["profit_pts"] = profit_pts
+                    result["steps"].append(f"Profit: {profit_pts:.2f} pts (trigger={TRAIL_TRIGGER})")
+
+                    if profit_pts >= TRAIL_TRIGGER:
+                        if not state.get("active"):
+                            state["active"] = True
+                            result["steps"].append("Trailing ACTIVATED!")
+                        new_sl = round(best_price - TRAIL_OFFSET, 2)
+                        result["new_sl_calculated"] = new_sl
+                        if new_sl > current_sl:
+                            state["sl"] = new_sl
+                            update_result = update_stop_loss(symbol, new_sl)
+                            result["sl_update_result"] = update_result
+                            result["steps"].append(f"SL updated: {current_sl} -> {new_sl}")
+                        else:
+                            result["steps"].append(f"SL not updated: new_sl={new_sl} <= current_sl={current_sl}")
+                    else:
+                        result["steps"].append(f"Waiting for trigger: {profit_pts:.2f}/{TRAIL_TRIGGER} pts")
+
+                elif side == "Sell":
+                    if mark_price < best_price:
+                        state["best_price"] = mark_price
+                        best_price = mark_price
+                        result["steps"].append(f"Updated best_price to {best_price}")
+
+                    profit_pts = entry - best_price
+                    result["profit_pts"] = profit_pts
+                    result["steps"].append(f"Profit: {profit_pts:.2f} pts (trigger={TRAIL_TRIGGER})")
+
+                    if profit_pts >= TRAIL_TRIGGER:
+                        if not state.get("active"):
+                            state["active"] = True
+                            result["steps"].append("Trailing ACTIVATED!")
+                        new_sl = round(best_price + TRAIL_OFFSET, 2)
+                        result["new_sl_calculated"] = new_sl
+                        if new_sl < current_sl:
+                            state["sl"] = new_sl
+                            update_result = update_stop_loss(symbol, new_sl)
+                            result["sl_update_result"] = update_result
+                            result["steps"].append(f"SL updated: {current_sl} -> {new_sl}")
+                        else:
+                            result["steps"].append(f"SL not updated: new_sl={new_sl} >= current_sl={current_sl}")
+                    else:
+                        result["steps"].append(f"Waiting for trigger: {profit_pts:.2f}/{TRAIL_TRIGGER} pts")
+
+                result["state_after"] = dict(state)
+
+        except Exception as e:
+            result["error"] = str(e)
+            result["traceback"] = traceback.format_exc()
+
+        debug_results.append(result)
+
+    return jsonify({"status": "ok", "debug": debug_results})
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    """Keepalive endpoint — called every 14 minutes by external cron to prevent Render sleep"""
+    return jsonify({"status": "pong", "time": time.time()})
+
 @app.route("/", methods=["GET"])
 def health():
-    with pending_trail_lock:
-        pending = dict(pending_trail)
+    with trailing_lock:
+        active_trails = list(trailing_state.keys())
     return jsonify({
         "status": "ok",
-        "message": "Bybit Webhook Server Running — Server-Side Activation Monitor Active",
+        "message": "Bybit Webhook Server Running — Trailing Stop Active",
         "api_key_set": bool(BYBIT_API_KEY),
         "secret_set": bool(BYBIT_API_SECRET),
         "keep_alive": "active",
-        "activation_monitor": "active",
-        "trail_activation_pts": TRAIL_ACTIVATION,
-        "trail_distance_pts": TRAIL_DISTANCE,
-        "check_interval_sec": TRAIL_CHECK_INTERVAL,
-        "pending_trail": pending
+        "trailing_stop": "active",
+        "trail_trigger_pts": TRAIL_TRIGGER,
+        "trail_offset_pts": TRAIL_OFFSET,
+        "active_trails": active_trails
     })
 
 if __name__ == "__main__":
