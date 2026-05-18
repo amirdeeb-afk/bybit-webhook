@@ -272,25 +272,29 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # המתן 5 שניות לפני הגדרת Trailing Stop
-                print(f"[TRAIL] LONG waiting 5s before setting trailing stop...")
-                time.sleep(5)
-                # קבל את מחיר הכניסה האמיתי מהפוזיציה
-                pos_info = get_position(symbol)
-                if pos_info.get('has_position'):
-                    entry_price = pos_info.get('entry_price', 0)
-                else:
-                    entry_price = get_mark_price(symbol)
-                if entry_price > 0:
-                    active_price = round(entry_price + TRAIL_ACTIVATION, 2)
-                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
-                    print(f"[TRAIL] LONG: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
-                    if ts_result.get('retCode') == 0:
-                        print(f"[TRAIL] ✅ Trailing stop set successfully for LONG {symbol}")
-                    else:
-                        print(f"[TRAIL] ❌ Failed to set trailing stop (retCode={ts_result.get('retCode')})")
-                else:
-                    print(f"[TRAIL] ⚠️ Could not get entry price — trailing stop NOT set for LONG {symbol}")
+                # הגדר Trailing Stop ברקע — כדי שה-webhook יחזור מיד ל-TradingView
+                def set_trail_long(sym):
+                    for attempt in range(1, 4):  # 3 ניסיונות: אחרי 5s, 10s, 15s
+                        time.sleep(5)
+                        pos_info = get_position(sym)
+                        if pos_info.get('has_position'):
+                            entry_price = pos_info.get('entry_price', 0)
+                        else:
+                            entry_price = get_mark_price(sym)
+                        if entry_price > 0:
+                            active_price = round(entry_price + TRAIL_ACTIVATION, 2)
+                            ts_result = set_native_trailing_stop(sym, TRAIL_DISTANCE, active_price)
+                            print(f"[TRAIL] LONG attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
+                            if ts_result.get('retCode') == 0:
+                                print(f"[TRAIL] ✅ Trailing stop set successfully for LONG {sym} (attempt {attempt})")
+                                return
+                            else:
+                                print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                        else:
+                            print(f"[TRAIL] ⚠️ Attempt {attempt}: could not get entry price, retrying...")
+                    print(f"[TRAIL] ❌ All 3 attempts failed — trailing stop NOT set for LONG {sym}")
+                threading.Thread(target=set_trail_long, args=(symbol,), daemon=True).start()
+                print(f"[TRAIL] LONG: trailing stop thread started for {symbol}")
             else:
                 print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
@@ -304,25 +308,29 @@ def webhook():
             order_ok = str(ret_code) == "0"
             if order_ok:
                 position_open_time[symbol] = time.time()
-                # המתן 5 שניות לפני הגדרת Trailing Stop
-                print(f"[TRAIL] SHORT waiting 5s before setting trailing stop...")
-                time.sleep(5)
-                # קבל את מחיר הכניסה האמיתי מהפוזיציה
-                pos_info = get_position(symbol)
-                if pos_info.get('has_position'):
-                    entry_price = pos_info.get('entry_price', 0)
-                else:
-                    entry_price = get_mark_price(symbol)
-                if entry_price > 0:
-                    active_price = round(entry_price - TRAIL_ACTIVATION, 2)
-                    ts_result = set_native_trailing_stop(symbol, TRAIL_DISTANCE, active_price)
-                    print(f"[TRAIL] SHORT: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
-                    if ts_result.get('retCode') == 0:
-                        print(f"[TRAIL] ✅ Trailing stop set successfully for SHORT {symbol}")
-                    else:
-                        print(f"[TRAIL] ❌ Failed to set trailing stop (retCode={ts_result.get('retCode')})")
-                else:
-                    print(f"[TRAIL] ⚠️ Could not get entry price — trailing stop NOT set for SHORT {symbol}")
+                # הגדר Trailing Stop ברקע — כדי שה-webhook יחזור מיד ל-TradingView
+                def set_trail_short(sym):
+                    for attempt in range(1, 4):  # 3 ניסיונות: אחרי 5s, 10s, 15s
+                        time.sleep(5)
+                        pos_info = get_position(sym)
+                        if pos_info.get('has_position'):
+                            entry_price = pos_info.get('entry_price', 0)
+                        else:
+                            entry_price = get_mark_price(sym)
+                        if entry_price > 0:
+                            active_price = round(entry_price - TRAIL_ACTIVATION, 2)
+                            ts_result = set_native_trailing_stop(sym, TRAIL_DISTANCE, active_price)
+                            print(f"[TRAIL] SHORT attempt {attempt}: distance={TRAIL_DISTANCE}, entry={entry_price:.2f}, activation={active_price:.2f}. Result: {ts_result}")
+                            if ts_result.get('retCode') == 0:
+                                print(f"[TRAIL] ✅ Trailing stop set successfully for SHORT {sym} (attempt {attempt})")
+                                return
+                            else:
+                                print(f"[TRAIL] ❌ Attempt {attempt} failed (retCode={ts_result.get('retCode')}), retrying...")
+                        else:
+                            print(f"[TRAIL] ⚠️ Attempt {attempt}: could not get entry price, retrying...")
+                    print(f"[TRAIL] ❌ All 3 attempts failed — trailing stop NOT set for SHORT {sym}")
+                threading.Thread(target=set_trail_short, args=(symbol,), daemon=True).start()
+                print(f"[TRAIL] SHORT: trailing stop thread started for {symbol}")
             else:
                 print(f"[ORDER] SHORT order failed or retCode not 0: {result}")
 
