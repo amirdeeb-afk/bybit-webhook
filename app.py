@@ -25,6 +25,7 @@ RENDER_URL       = os.environ.get("RENDER_URL", "https://bybit-webhook-l0y4.onre
 TRAIL_ACTIVATION = 222.0  # הטריילינג מופעל רק אחרי 222 נקודות רווח
 TRAIL_DISTANCE   = 22.0   # 22 נקודות מהשיא — יסגור בירידה של 22 נקודות מהשיא
 TRAIL_OFFSET     = TRAIL_DISTANCE  # בשימוש לאחור בקוד (תאימות אחורה)
+SL_POINTS        = 150.0  # SL קבוע — 150 נקודות מהכניסה בפועל (מחושב ע"י הבוט, לא TradingView)
 TRAIL_CHECK_INTERVAL = 30  # בדיקה כל 30 שניות
 
 # מילון לשמירת מצב הטריילינג לכל סימבול
@@ -158,7 +159,7 @@ def update_stop_loss(symbol: str, new_sl: float) -> dict:
     return bybit_post("/v5/position/trading-stop", params)
 
 def _set_trail_worker(sym, direction):
-    """פונקציה ברמת המודול להגדרת trailing stop ברקע — 3 ניסיונות כל 5 שניות"""
+    """פונקציה ברמת המודול להגדרת trailing stop + SL ברקע — 3 ניסיונות כל 5 שניות"""
     for attempt in range(1, 4):
         time.sleep(5)
         try:
@@ -168,14 +169,21 @@ def _set_trail_worker(sym, direction):
             else:
                 entry_price = get_mark_price(sym)
             if entry_price > 0:
+                # חישוב Trailing Stop Activation
                 if direction == 'long':
                     active_price = round(entry_price + TRAIL_ACTIVATION, 2)
+                    sl_price     = round(entry_price - SL_POINTS, 2)
                 else:
                     active_price = round(entry_price - TRAIL_ACTIVATION, 2)
+                    sl_price     = round(entry_price + SL_POINTS, 2)
+                # הגדרת Trailing Stop
                 ts_result = set_native_trailing_stop(sym, TRAIL_DISTANCE, active_price)
                 print(f"[TRAIL] {direction.upper()} attempt {attempt}: entry={entry_price:.2f}, activation={active_price:.2f}, distance={TRAIL_DISTANCE}. Result: {ts_result}")
                 if ts_result.get('retCode') == 0:
                     print(f"[TRAIL] ✅ Trailing stop set for {direction.upper()} {sym} (attempt {attempt})")
+                    # הגדרת SL לפי entry בפועל
+                    sl_result = update_stop_loss(sym, sl_price)
+                    print(f"[SL] ✅ SL set to {sl_price:.2f} (entry={entry_price:.2f} ± {SL_POINTS}pts). Result: {sl_result}")
                     return
                 else:
                     print(f"[TRAIL] ❌ Attempt {attempt} failed retCode={ts_result.get('retCode')}, retrying...")
@@ -292,8 +300,9 @@ def webhook():
                 print(f"[NEW ENTRY] No existing position, proceeding with fresh entry")
 
         if action == "buy" and sentiment == "long":
+            # SL מחושב ע"י הבוט לפי entry בפועל — לא מ-TradingView
             result = place_order(symbol, "Buy", qty,
-                                 stop_loss=float(sl) if sl else None,
+                                 stop_loss=None,
                                  take_profit=float(tp) if tp else None)
             print(f"[ORDER] LONG result: {result}")
             # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
@@ -308,8 +317,9 @@ def webhook():
                 print(f"[ORDER] LONG order failed or retCode not 0: {result}")
 
         elif action == "sell" and sentiment == "short":
+            # SL מחושב ע"י הבוט לפי entry בפועל — לא מ-TradingView
             result = place_order(symbol, "Sell", qty,
-                                 stop_loss=float(sl) if sl else None,
+                                 stop_loss=None,
                                  take_profit=float(tp) if tp else None)
             print(f"[ORDER] SHORT result: {result}")
             # הפעל Trailing מובנה של Bybit — בדיקה גמישה של retCode
